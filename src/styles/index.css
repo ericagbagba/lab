@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    /* Style par défaut requis par l'UX */
+    -webkit-tap-highlight-color: transparent;
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+}
+
+/* Animations d'interface fluides */
+@keyframes slideUp {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-up {
+  animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Rounded inputs standard 14px */
+input, select, textarea {
+  border-radius: 14px !important;
+  font-weight: 600;
+  transition: all 0.2s ease-in-out;
+}
+
+/* Focus style pour les formulaires */
+input:focus, select:focus, textarea:focus {
+  border-color: #1a56a0 !important;
+  background-color: #ffffff !important;
+  box-shadow: 0 0 0 4px rgba(26, 86, 160, 0.15);
+}
+
+/* Boutons arrondis */
+button {
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Utilities pour les boutons */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}

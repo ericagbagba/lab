@@ -1,0 +1,187 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- FONCTIONS UTILS ---
+    
+    // Vérifier si l'utilisateur est authentifié
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    // Récupérer les données de l'utilisateur connecté
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Rôles
+    function getRole() {
+      return getUserData().role;
+    }
+
+    function isDirecteur() {
+      return isAuth() && getRole() == 'directeur';
+    }
+
+    function isControleur() {
+      return isAuth() && getRole() == 'contrôleur';
+    }
+
+    function isSuperviseur() {
+      return isAuth() && getRole() == 'superviseur';
+    }
+
+    function isChefAgence() {
+      return isAuth() && getRole() == 'chef_agence';
+    }
+
+    function isOperateur() {
+      return isAuth() && getRole() == 'opérateur';
+    }
+
+    function isTechnicien() {
+      return isAuth() && getRole() == 'technicien';
+    }
+
+    // Vérifier si l'utilisateur est rattaché à l'agence concernée
+    function isFromAgency(agencyId) {
+      return isAuth() && (
+        getUserData().agencyId == agencyId || 
+        (getUserData().role == 'superviseur' && agencyId in getUserData().assignedAgencyIds)
+      );
+    }
+
+    // ---------------- FICHE UTILISATEURS (users) ----------------
+    match /users/{userId} {
+      allow read: if isAuth() && (request.auth.uid == userId || isDirecteur() || isControleur());
+      
+      // Permettre la création de son propre profil à l'inscription, avec rôle obligatoirement null ou inexistant
+      allow create: if isAuth() && request.auth.uid == userId && (
+        !('role' in request.resource.data) || request.resource.data.role == null
+      );
+      
+      // Seul le directeur peut attribuer des rôles.
+      // Un utilisateur peut modifier ses propres infos (comme displayName) MAIS ne peut pas modifier son role, son agencyId ni ses assignedAgencyIds.
+      allow update: if isDirecteur() || (
+        isAuth() && request.auth.uid == userId && 
+        request.resource.data.role == resource.data.role &&
+        request.resource.data.agencyId == resource.data.agencyId &&
+        request.resource.data.assignedAgencyIds == resource.data.assignedAgencyIds
+      );
+    }
+
+    // ---------------- AGENCES (agencies) ----------------
+    match /agencies/{agencyId} {
+      allow read: if isAuth();
+      allow write: if isDirecteur();
+    }
+
+    // ---------------- BASES TECHNIQUES (bases) ----------------
+    match /bases/{baseId} {
+      allow read: if isAuth();
+      
+      // Création par Directeur, Chef d'agence, ou Superviseur rattaché
+      allow create: if isDirecteur() || 
+                    ((isChefAgence() || isSuperviseur()) && isFromAgency(request.resource.data.agencyId));
+      
+      // Modification par Directeur et Chef d'agence rattaché uniquement
+      allow update: if isDirecteur() || 
+                    (isChefAgence() && isFromAgency(resource.data.agencyId));
+      
+      // Suppression réservée au Directeur
+      allow delete: if isDirecteur();
+    }
+
+    // ---------------- TOPOLOGIES (topologies) ----------------
+    match /topologies/{topoId} {
+      allow read: if isAuth();
+      
+      // Création et modification réservées exclusivement à l'opérateur de son agence rattachée
+      allow create, update: if isOperateur() && isFromAgency(request.resource.data.agencyId);
+      allow delete: if isDirecteur();
+    }
+
+    // ---------------- CLIENTS (clients) ----------------
+    match /clients/{clientId} {
+      allow read: if isAuth();
+      
+      // Création autorisée à tous les membres opérationnels rattachés à cette agence
+      allow create: if isAuth() && (
+        isChefAgence() || isOperateur() || isTechnicien() || isSuperviseur()
+      ) && isFromAgency(request.resource.data.agencyId);
+      
+      // Modification et suppression réservées exclusivement à l'opérateur de l'agence
+      allow update, delete: if isOperateur() && isFromAgency(resource.data.agencyId);
+    }
+
+    // ---------------- PANNES / TICKETS INCIDENTS (faults) ----------------
+    match /faults/{faultId} {
+      allow read: if isAuth();
+      
+      // Création/Signalement par membres opérationnels
+      allow create: if isAuth() && (
+        isDirecteur() || isControleur() || isChefAgence() || isOperateur() || isTechnicien() || isSuperviseur()
+      );
+      
+      // Modification / Résolution / Annulation
+      allow update: if isAuth() && (
+        // Le contrôleur peut modifier mais PAS résoudre (interdit de modifier le status en 'résolue')
+        (isControleur() && request.resource.data.status != 'résolue') ||
+        
+        // Tout agent de l'agence rattachée peut modifier / résoudre
+        ((isChefAgence() || isOperateur() || isTechnicien() || isSuperviseur()) && isFromAgency(resource.data.agencyId)) ||
+        
+        // Annulation : Seulement si l'utilisateur connecté est le signaleur d'origine
+        (request.resource.data.status == 'annulée' && resource.data.signaleurId == request.auth.uid) ||
+        
+        isDirecteur()
+      );
+      
+      allow delete: if isDirecteur();
+    }
+
+    // ---------------- STOCKS D'AGENCE (stocks) ----------------
+    match /stocks/{stockId} {
+      allow read: if isAuth();
+      
+      // Création et édition : Chef d'agence rattaché
+      allow create, update: if (isChefAgence() && isFromAgency(request.resource.data.agencyId)) || 
+                            // Permettre à tous les membres de consommer (décrémenter la quantité)
+                            (isFromAgency(resource.data.agencyId) && request.resource.data.quantity < resource.data.quantity);
+      
+      allow delete: if isChefAgence() && isFromAgency(resource.data.agencyId);
+    }
+
+    // ---------------- STOCK GLOBAL (stockGlobal) ----------------
+    match /stockGlobal/{globalStockId} {
+      allow read: if isAuth();
+      // Droits totaux réservés au contrôleur
+      allow write: if isControleur() || isDirecteur();
+    }
+
+    // ---------------- REQUETES D'APPROVISIONNEMENT (stockRequests) ----------------
+    match /stockRequests/{requestId} {
+      // Lecture par le contrôleur global et le chef de l'agence demandeuse
+      allow read: if isControleur() || isDirecteur() || (isChefAgence() && isFromAgency(resource.data.agencyId));
+      
+      // Création par le chef d'agence rattaché
+      allow create: if isChefAgence() && isFromAgency(request.resource.data.agencyId);
+      
+      // Mise à jour (Acceptation / Refus) par le contrôleur
+      allow update: if isControleur() || isDirecteur();
+      
+      allow delete: if isDirecteur();
+    }
+
+    // ---------------- JOURNAL DES ACTIONS (activities) ----------------
+    match /activities/{activityId} {
+      // Écriture en append-only
+      allow create: if isAuth();
+      
+      // Lecture selon le rôle
+      allow read: if isDirecteur() || isControleur() || 
+                    ((isSuperviseur() || isChefAgence()) && isFromAgency(resource.data.agencyId));
+    }
+  }
+}
